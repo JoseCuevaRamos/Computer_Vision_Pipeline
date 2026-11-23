@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+data/imagenette/*
+model_cache/*
+results/*
+!data/imagenette/.gitkeep
+!model_cache/.gitkeep
+!results/.gitkeep
+

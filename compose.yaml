@@ -1,0 +1,105 @@
+x-common: &common
+  build:
+    context: .
+  working_dir: /app
+  environment:
+    TORCH_HOME: /app/model_cache
+    PYTHONUNBUFFERED: "1"
+    PYTHONPATH: /app
+
+services:
+  prepare:
+    <<: *common
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+      - type: bind
+        source: ./results
+        target: /app/results
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+    command: python -m src.prepare_data
+
+  experiment1:
+    <<: *common
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+        read_only: true
+      - type: bind
+        source: ./results
+        target: /app/results
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+        read_only: true
+    command:
+      - python
+      - -m
+      - experiments.experiment1_local
+      - --num-images
+      - "500"
+      - --runs
+      - "5"
+      - --warmup
+      - "20"
+      - --device
+      - cpu
+      - --seed
+      - "42"
+
+  experiment1-quick:
+    <<: *common
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+        read_only: true
+      - type: bind
+        source: ./results
+        target: /app/results
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+        read_only: true
+    command:
+      - python
+      - -m
+      - experiments.experiment1_local
+      - --num-images
+      - "10"
+      - --runs
+      - "1"
+      - --warmup
+      - "2"
+      - --output-subdir
+      - experiment1_quick
+
+  test:
+    <<: *common
+    network_mode: none
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+        read_only: true
+      - type: bind
+        source: ./results
+        target: /app/results
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+        read_only: true
+    command: pytest -q
+
