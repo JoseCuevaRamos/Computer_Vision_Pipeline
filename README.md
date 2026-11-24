@@ -195,7 +195,7 @@ Después ejecute el experimento completo:
 docker compose -f compose.client.yaml run --rm client
 ```
 
-Ese único comando ejecuta C1, C2 y C4 secuencialmente, con cinco repeticiones completas y 20 solicitudes de calentamiento antes de cada repetición: son 15 corridas medidas en total. `docker compose run --rm` crea un contenedor temporal para la ejecución y lo elimina al terminar; los CSV, JSON y gráficos no se pierden porque están en un bind mount de Windows.
+Ese único comando ejecuta C1, C2 y C4 secuencialmente, con tres repeticiones completas y 20 solicitudes de calentamiento antes de cada repetición: son 9 corridas medidas en total. `docker compose run --rm` crea un contenedor temporal para la ejecución y lo elimina al terminar; los CSV, JSON y gráficos no se pierden porque están en un bind mount de Windows.
 
 Si una corrida ya existe, el programa se detiene para no sobrescribirla. Para repetir deliberadamente, mueva los resultados anteriores o agregue `--overwrite` al comando del módulo.
 

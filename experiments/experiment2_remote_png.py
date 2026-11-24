@@ -286,7 +286,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-summary", type=Path, default=Path("/app/baseline/summary/summary_runs.csv"))
     parser.add_argument("--baseline-predictions", type=Path, default=Path("/app/baseline/run_01/predictions.csv"))
     parser.add_argument("--num-images", type=int, default=int(os.environ.get("EXPERIMENT2_IMAGES", "500")))
-    parser.add_argument("--runs", type=int, default=int(os.environ.get("EXPERIMENT2_RUNS", "5")))
+    parser.add_argument("--runs", type=int, default=int(os.environ.get("EXPERIMENT2_RUNS", "3")))
     parser.add_argument("--warmup", type=int, default=int(os.environ.get("EXPERIMENT2_WARMUP", "20")))
     default_concurrency = os.environ.get("EXPERIMENT2_CONCURRENCIES", os.environ.get("EXPERIMENT2_CONCURRENCY", "1,2,4"))
     parser.add_argument("--concurrencies", type=lambda value: [int(item) for item in value.split(",")], default=[int(item) for item in default_concurrency.split(",")])
