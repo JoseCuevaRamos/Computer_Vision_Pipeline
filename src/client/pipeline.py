@@ -40,6 +40,7 @@ async def run_pipeline(
     *,
     concurrency: int,
     queue_capacity: int | None = None,
+    preprocess_on_client: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     if concurrency < 1:
         raise ValueError("concurrency must be positive")
@@ -54,7 +55,12 @@ async def run_pipeline(
     async def producer() -> None:
         for index, record in enumerate(records):
             preparation_start = time.perf_counter_ns()
-            encoded = await asyncio.to_thread(encode_image, paths[record.image_id], record.image_id)
+            if preprocess_on_client:
+                encoded = await asyncio.to_thread(
+                    encode_image, paths[record.image_id], record.image_id, preprocess_on_client=True,
+                )
+            else:
+                encoded = await asyncio.to_thread(encode_image, paths[record.image_id], record.image_id)
             preparation_end = time.perf_counter_ns()
             prepare_intervals.append((preparation_start, preparation_end))
             await queue.put((index, record, encoded, preparation_start))
@@ -70,6 +76,11 @@ async def run_pipeline(
             index, record, encoded, end_to_end_start = item
             queue_wait_ms = (time.perf_counter_ns() - encoded.prepared_ns) / 1_000_000
             http_start = time.perf_counter_ns()
+            preparation_values = {
+                "client_decode_ms": encoded.decode_ms, "client_preprocess_ms": encoded.preprocess_ms,
+                "source_width": encoded.source_width, "source_height": encoded.source_height,
+                "sent_width": encoded.width, "sent_height": encoded.height,
+            }
             await tracker.enter()
             try:
                 response = await client.predict(record.image_id, encoded.png_bytes)
@@ -90,6 +101,7 @@ async def run_pipeline(
                     "png_bytes": len(encoded.png_bytes), "response_bytes": response.response_bytes,
                     "retries": response.retries, "status": "ok", "error": "",
                     **{f"server_{key}": value for key, value in metrics.items()},
+                    **preparation_values,
                 }
             except RemoteRequestError as error:
                 values = {
@@ -100,6 +112,7 @@ async def run_pipeline(
                     "end_to_end_ms": (time.perf_counter_ns() - end_to_end_start) / 1_000_000,
                     "png_bytes": len(encoded.png_bytes), "status": "error", "error": str(error),
                     "retries": error.retries,
+                    **preparation_values,
                 }
             finally:
                 await tracker.exit()
@@ -107,8 +120,10 @@ async def run_pipeline(
                 queue.task_done()
             output.append(PipelineResult(index, values))
 
-    tasks = [asyncio.create_task(worker()) for _ in range(concurrency)]
-    await asyncio.gather(producer(), *tasks)
+    async with asyncio.TaskGroup() as tasks:
+        tasks.create_task(producer())
+        for _ in range(concurrency):
+            tasks.create_task(worker())
     output.sort(key=lambda item: item.index)
     overlap_count = sum(
         1 for prepare_start, prepare_end in prepare_intervals

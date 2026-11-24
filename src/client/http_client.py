@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from src.image_geometry import PREPROCESSING_ID
+
 
 class RemoteRequestError(RuntimeError):
     def __init__(self, message: str, *, retries: int = 0) -> None:
@@ -33,6 +35,7 @@ class InferenceHTTPClient:
         max_retries: int = 2,
         require_https: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
+        preprocess_on_client: bool = False,
     ) -> None:
         base_url = server_url.rstrip("/")
         parsed = urlparse(base_url)
@@ -43,6 +46,8 @@ class InferenceHTTPClient:
         if not api_key:
             raise ValueError("API_KEY cannot be empty")
         self.max_retries = max_retries
+        self.preprocess_on_client = preprocess_on_client
+        self.prediction_path = "/predict/preprocessed" if preprocess_on_client else "/predict"
         self.client = httpx.AsyncClient(
             base_url=base_url,
             timeout=httpx.Timeout(timeout_seconds),
@@ -62,6 +67,8 @@ class InferenceHTTPClient:
         payload = response.json()
         if payload.get("status") != "ok" or not payload.get("model_loaded"):
             raise RemoteRequestError(f"Server is not ready: {payload}")
+        if self.preprocess_on_client and payload.get("preprocessing_id") != PREPROCESSING_ID:
+            raise RemoteRequestError("Server does not support experiment 3; rebuild and restart the server")
         return payload
 
     async def predict(self, image_id: str, png_bytes: bytes) -> HTTPResult:
@@ -70,7 +77,7 @@ class InferenceHTTPClient:
         for attempt in range(self.max_retries + 1):
             try:
                 response = await self.client.post(
-                    "/predict",
+                    self.prediction_path,
                     data={"image_id": image_id},
                     files={"image": (f"{image_id}.png", png_bytes, "image/png")},
                 )
@@ -80,6 +87,8 @@ class InferenceHTTPClient:
                 response.raise_for_status()
                 payload = response.json()
                 self._validate_response(payload, image_id)
+                if self.preprocess_on_client and payload.get("preprocessing_id") != PREPROCESSING_ID:
+                    raise ValueError("Server did not confirm the experiment 3 preprocessing contract")
                 return HTTPResult(
                     body=payload,
                     http_total_ms=(time.perf_counter_ns() - start) / 1_000_000,

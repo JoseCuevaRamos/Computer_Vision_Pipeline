@@ -18,4 +18,12 @@ results/experiment2/client/*
 results/experiment2/server/*
 !results/experiment2/client/.gitkeep
 !results/experiment2/server/.gitkeep
+!results/experiment3/
+results/experiment3/*
+!results/experiment3/client/
+!results/experiment3/server/
+results/experiment3/client/*
+results/experiment3/server/*
+!results/experiment3/client/.gitkeep
+!results/experiment3/server/.gitkeep
 

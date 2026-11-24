@@ -10,6 +10,7 @@ from PIL import Image, UnidentifiedImageError
 
 from src.model import WEIGHTS, load_model
 from src.preprocessing import preprocess_image
+from src.image_geometry import CROP_SIZE, PREPROCESSING_ID
 
 
 class InvalidImageError(ValueError):
@@ -30,7 +31,10 @@ class PredictionService:
         with torch.inference_mode():
             return self.model(batch)
 
-    async def predict_png(self, payload: bytes, min_dimension: int = 32, max_dimension: int = 4096) -> dict[str, Any]:
+    async def predict_png(
+        self, payload: bytes, min_dimension: int = 32, max_dimension: int = 4096,
+        *, spatial_preprocessed: bool = False,
+    ) -> dict[str, Any]:
         total_start = time.perf_counter_ns()
         decode_start = time.perf_counter_ns()
         try:
@@ -38,6 +42,8 @@ class PredictionService:
                 if source.format != "PNG":
                     raise InvalidImageError("Only decoded PNG images are accepted")
                 width, height = source.size
+                if spatial_preprocessed and (source.size != (CROP_SIZE, CROP_SIZE) or source.mode != "RGB"):
+                    raise InvalidImageError("Preprocessed input must be an RGB PNG of exactly 224x224 pixels")
                 if not (min_dimension <= width <= max_dimension and min_dimension <= height <= max_dimension):
                     raise InvalidImageError(f"Image dimensions {width}x{height} are outside allowed limits")
                 image = source.convert("RGB")
@@ -47,7 +53,7 @@ class PredictionService:
         decode_ms = (time.perf_counter_ns() - decode_start) / 1_000_000
 
         preprocess_start = time.perf_counter_ns()
-        batch = preprocess_image(image)
+        batch = preprocess_image(image, spatial_preprocessed=spatial_preprocessed)
         preprocess_ms = (time.perf_counter_ns() - preprocess_start) / 1_000_000
 
         queue_start = time.perf_counter_ns()
@@ -74,6 +80,8 @@ class PredictionService:
         total_internal_ms = (time.perf_counter_ns() - total_start) / 1_000_000
         return {
             "model": self.model_name,
+            "preprocessing_id": PREPROCESSING_ID if spatial_preprocessed else "server",
+            "input_width": width, "input_height": height,
             "predicted_class_id": top5_ids[0],
             "predicted_class_name": self.categories[top5_ids[0]],
             "confidence_top1": top5_probabilities[0],

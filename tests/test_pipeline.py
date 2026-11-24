@@ -1,8 +1,10 @@
 import asyncio
+import io
 import time
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 pytest.importorskip("httpx")
 
@@ -68,4 +70,25 @@ def test_pipeline_respects_concurrency_and_demonstrates_overlap(monkeypatch) -> 
     assert metrics["max_in_flight_observed"] == 2
     assert metrics["pipeline_overlap_demonstrated"] is True
     assert metrics["preparation_http_overlap_count"] > 0
+
+
+def test_experiment3_pipeline_prepares_every_image_and_records_client_work(tmp_path) -> None:
+    class PreparedClient(SlowFakeClient):
+        async def predict(self, image_id, png_bytes):
+            with Image.open(io.BytesIO(png_bytes)) as image:
+                assert image.size == (224, 224) and image.mode == "RGB" and image.format == "PNG"
+            return await super().predict(image_id, png_bytes)
+
+    records = [_record(index) for index in range(3)]
+    paths = {}
+    for record in records:
+        path = tmp_path / record.filename
+        Image.new("RGB", (321, 480), (20, 50, 80)).save(path, format="PNG")
+        paths[record.image_id] = path
+    values, _ = asyncio.run(run_pipeline(records, paths, PreparedClient(), concurrency=2, preprocess_on_client=True))
+    assert len(values) == 3
+    assert all(row["status"] == "ok" for row in values)
+    assert all(row["sent_width"] == row["sent_height"] == 224 for row in values)
+    assert all(row["client_preprocess_ms"] > 0 and row["client_decode_ms"] > 0 for row in values)
+    assert all(row["end_to_end_ms"] >= row["read_ms"] + row["client_preprocess_ms"] + row["encode_ms"] for row in values)
 

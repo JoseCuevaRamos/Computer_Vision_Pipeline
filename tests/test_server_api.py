@@ -10,6 +10,7 @@ from PIL import Image
 
 from src.server.api import create_app
 from src.server.prediction_service import InvalidImageError
+from src.image_geometry import PREPROCESSING_ID
 
 
 class FakePredictionService:
@@ -54,6 +55,7 @@ def test_health_authentication_prediction_and_persistence(tmp_path, monkeypatch)
         assert health.json() == {
             "status": "ok", "model_loaded": True,
             "model": "efficientnet_b0", "weights": "IMAGENET1K_V1",
+            "preprocessing_id": PREPROCESSING_ID,
         }
         unauthorized = client.post(
             "/predict", data={"image_id": "img-1"},

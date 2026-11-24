@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -20,6 +21,7 @@ from src.client.pipeline import run_pipeline
 from src.dataset import load_manifest, resolve_dataset_path
 from src.metrics import descriptive_stats, quality_metrics
 from src.resource_monitor import ResourceMonitor
+from src.image_geometry import PREPROCESSING_ID
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -61,6 +63,13 @@ def calculate_metrics(
         "total_response_bytes": int(successes["response_bytes"].sum()),
         "total_retries": int(successes["retries"].sum()),
         "classification": quality_metrics(successes),
+        "stage_latency": {
+            column: descriptive_stats(successes[column])
+            for column in (
+                "read_ms", "client_decode_ms", "client_preprocess_ms", "encode_ms",
+                "client_queue_wait_ms", "server_decode_ms", "server_preprocess_ms", "server_inference_ms",
+            ) if column in successes
+        },
         "client_resources": resources,
         "pipeline": pipeline_metrics,
         "configuration": configuration,
@@ -72,6 +81,14 @@ async def execute(args: argparse.Namespace) -> None:
     records = load_manifest(args.manifest, args.data_root, verify_hashes=not args.skip_hash_verification)
     records = select_records(records, args.num_images)
     paths = {record.image_id: resolve_dataset_path(args.data_root, record.relative_path) for record in records}
+    fingerprint = hashlib.sha256(
+        "\n".join(f"{record.image_id}:{record.sha256}" for record in records).encode()
+    ).hexdigest()
+    for concurrency in args.concurrencies:
+        for run_number in range(1, args.runs + 1):
+            run_dir = args.results_root / f"run_c{concurrency}" / f"run_{run_number:02d}"
+            if (run_dir / "predictions.csv").exists() and not args.overwrite:
+                raise FileExistsError(f"Results already exist at {run_dir}; use --overwrite")
     args.results_root.mkdir(parents=True, exist_ok=True)
     summary_rows: list[dict[str, Any]] = []
     all_predictions: list[pd.DataFrame] = []
@@ -86,18 +103,23 @@ async def execute(args: argparse.Namespace) -> None:
             async with InferenceHTTPClient(
                 args.server_url, args.api_key, timeout_seconds=args.timeout,
                 max_retries=args.max_retries, require_https=not args.allow_http,
+                preprocess_on_client=args.preprocess_on_client,
             ) as client:
                 await client.health()
                 warmup_records = [records[index % len(records)] for index in range(args.warmup)]
                 if warmup_records:
-                    await run_pipeline(warmup_records, paths, client, concurrency=concurrency)
+                    await run_pipeline(
+                        warmup_records, paths, client, concurrency=concurrency,
+                        preprocess_on_client=args.preprocess_on_client,
+                    )
 
                 monitor = ResourceMonitor(args.resource_interval)
                 monitor.start()
                 start = time.perf_counter_ns()
                 try:
                     values, pipeline_metrics = await run_pipeline(
-                        records, paths, client, concurrency=concurrency, queue_capacity=args.queue_capacity
+                        records, paths, client, concurrency=concurrency, queue_capacity=args.queue_capacity,
+                        preprocess_on_client=args.preprocess_on_client,
                     )
                 finally:
                     end = time.perf_counter_ns()
@@ -113,6 +135,12 @@ async def execute(args: argparse.Namespace) -> None:
                 "num_images": args.num_images, "runs": args.runs, "concurrency": concurrency,
                 "warmup": args.warmup, "timeout_seconds": args.timeout,
                 "max_retries": args.max_retries, "network_conditions": args.network_conditions,
+                "experiment": args.experiment, "dataset_fingerprint": fingerprint,
+                "input_representation": "preprocessed_png_224" if args.preprocess_on_client else "full_png",
+                "preprocessing_id": PREPROCESSING_ID,
+                "spatial_preprocessing_location": "client" if args.preprocess_on_client else "server",
+                "model": "efficientnet_b0", "weights": "IMAGENET1K_V1",
+                "timing_note": "encode_ms measures PNG encoding only; client_decode_ms and client_preprocess_ms are separate",
             }
             metrics = calculate_metrics(frame, total_seconds, resource_summary, pipeline_metrics, configuration)
             write_csv(run_dir / "predictions.csv", csv_ready(frame))
@@ -158,7 +186,7 @@ async def execute(args: argparse.Namespace) -> None:
             "Consistencia con E1: "
             f"{consistency['summary']['top1_matches']}/{consistency['summary']['compared_images']} top-1"
         )
-    generate_figures(summary, pd.concat(all_predictions), pd.concat(all_resources), aggregate, comparison, args.results_root / "figures")
+    generate_figures(summary, pd.concat(all_predictions), pd.concat(all_resources), aggregate, comparison, args.results_root / "figures", experiment=args.experiment)
 
 
 def select_records(records: list, count: int) -> list:
@@ -243,7 +271,7 @@ def compare_local_predictions(remote: pd.DataFrame, baseline_path: Path) -> dict
     }
 
 
-def generate_figures(summary: pd.DataFrame, predictions: pd.DataFrame, resources: pd.DataFrame, aggregate: pd.DataFrame, comparison: pd.DataFrame, output: Path) -> None:
+def generate_figures(summary: pd.DataFrame, predictions: pd.DataFrame, resources: pd.DataFrame, aggregate: pd.DataFrame, comparison: pd.DataFrame, output: Path, *, experiment: int = 2) -> None:
     output.mkdir(parents=True, exist_ok=True)
     labels = aggregate["configuration"]
     plots = [
@@ -258,7 +286,7 @@ def generate_figures(summary: pd.DataFrame, predictions: pd.DataFrame, resources
     fig, ax = plt.subplots(figsize=(8, 4));
     for name, group in ok.groupby("concurrency"): ax.hist(group["http_total_ms"], bins=25, alpha=.5, label=f"C{name}")
     ax.set(title="Distribución de latencia HTTP", xlabel="ms", ylabel="Frecuencia"); ax.legend(); _save(fig, output / "05_http_latency_distribution.png")
-    stage_columns = ["read_ms", "encode_ms", "client_queue_wait_ms", "server_decode_ms", "server_preprocess_ms", "server_inference_ms", "server_postprocess_ms"]
+    stage_columns = ["read_ms", "client_decode_ms", "client_preprocess_ms", "encode_ms", "client_queue_wait_ms", "server_decode_ms", "server_preprocess_ms", "server_inference_ms", "server_postprocess_ms"]
     fig, ax = plt.subplots(figsize=(10, 4)); ok[stage_columns].mean().plot.bar(ax=ax); ax.set(title="Tiempo promedio por etapa", ylabel="ms"); _save(fig, output / "06_pipeline_stages.png")
     fig, ax = plt.subplots(figsize=(8, 4)); ax.hist(ok["png_bytes"] / 1024, bins=30); ax.set(title="Tamaño de payload PNG", xlabel="KiB", ylabel="Frecuencia"); _save(fig, output / "07_png_sizes.png")
     fig, ax = plt.subplots(figsize=(8, 4));
@@ -269,15 +297,17 @@ def generate_figures(summary: pd.DataFrame, predictions: pd.DataFrame, resources
     ax.set(title="RAM del cliente", xlabel="s", ylabel="MB"); ax.legend(); _save(fig, output / "09_client_ram.png")
     if comparison["experiment1_total_seconds"].notna().any():
         fig, ax = plt.subplots(figsize=(8, 4)); ax.bar(["E1 local", *labels], [comparison["experiment1_total_seconds"].iloc[0], *aggregate["total_seconds_mean"]]); ax.set(title="Comparación con experimento 1", ylabel="s"); _save(fig, output / "11_comparison_experiment1.png")
-        fig, ax = plt.subplots(figsize=(7, 4)); ax.bar(labels, comparison["speedup_relative"]); ax.axhline(1, color="black"); ax.set(title="Speedup relativo", ylabel="E1 / E2"); _save(fig, output / "12_relative_speedup.png")
+        fig, ax = plt.subplots(figsize=(7, 4)); ax.bar(labels, comparison["speedup_relative"]); ax.axhline(1, color="black"); ax.set(title="Speedup relativo", ylabel=f"E1 / E{experiment}"); _save(fig, output / "12_relative_speedup.png")
 
 
 def _save(fig: plt.Figure, path: Path) -> None:
     fig.tight_layout(); fig.savefig(path, dpi=160, bbox_inches="tight"); plt.close(fig)
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Experiment 2: distributed PNG pipeline")
+def parse_args(experiment: int = 2, argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=f"Experiment {experiment}: distributed PNG pipeline")
+    parser.set_defaults(experiment=experiment, preprocess_on_client=experiment == 3)
+    env_prefix = f"EXPERIMENT{experiment}"
     parser.add_argument("--server-url", default=os.environ.get("SERVER_URL", ""))
     parser.add_argument("--api-key", default=os.environ.get("API_KEY", ""))
     parser.add_argument("--data-root", type=Path, default=Path("/app/data/imagenette"))
@@ -285,10 +315,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-root", type=Path, default=Path("/app/results/client"))
     parser.add_argument("--baseline-summary", type=Path, default=Path("/app/baseline/summary/summary_runs.csv"))
     parser.add_argument("--baseline-predictions", type=Path, default=Path("/app/baseline/run_01/predictions.csv"))
-    parser.add_argument("--num-images", type=int, default=int(os.environ.get("EXPERIMENT2_IMAGES", "500")))
-    parser.add_argument("--runs", type=int, default=int(os.environ.get("EXPERIMENT2_RUNS", "5")))
-    parser.add_argument("--warmup", type=int, default=int(os.environ.get("EXPERIMENT2_WARMUP", "20")))
-    default_concurrency = os.environ.get("EXPERIMENT2_CONCURRENCIES", os.environ.get("EXPERIMENT2_CONCURRENCY", "1,2,4"))
+    parser.add_argument("--num-images", type=int, default=int(os.environ.get(f"{env_prefix}_IMAGES", "500")))
+    parser.add_argument("--runs", type=int, default=int(os.environ.get(f"{env_prefix}_RUNS", "5")))
+    parser.add_argument("--warmup", type=int, default=int(os.environ.get(f"{env_prefix}_WARMUP", "20")))
+    default_concurrency = os.environ.get(f"{env_prefix}_CONCURRENCIES", os.environ.get(f"{env_prefix}_CONCURRENCY", "1,2,4"))
     parser.add_argument("--concurrencies", type=lambda value: [int(item) for item in value.split(",")], default=[int(item) for item in default_concurrency.split(",")])
     parser.add_argument("--timeout", type=float, default=float(os.environ.get("HTTP_TIMEOUT_SECONDS", "60")))
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("HTTP_MAX_RETRIES", "2")))
@@ -298,10 +328,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-http", action="store_true")
     parser.add_argument("--skip-hash-verification", action="store_true")
     parser.add_argument("--overwrite", action="store_true")
-    args = parser.parse_args()
+    if experiment == 3:
+        parser.add_argument("--experiment2-results", type=Path, default=Path("/app/experiment2"))
+    args = parser.parse_args(argv)
     if not args.server_url or not args.api_key: parser.error("SERVER_URL and API_KEY are required")
     if not 1 <= args.num_images <= 500 or args.runs < 1 or args.warmup < 0: parser.error("Invalid image/run/warmup values")
-    if any(value not in {1, 2, 4} for value in args.concurrencies): parser.error("Concurrencies must be 1, 2 or 4")
+    if not args.concurrencies or len(set(args.concurrencies)) != len(args.concurrencies) or any(value not in {1, 2, 4} for value in args.concurrencies): parser.error("Concurrencies must be unique values from 1, 2 or 4")
+    if args.timeout <= 0 or args.max_retries < 0 or args.resource_interval <= 0: parser.error("Invalid timeout, retry count or resource interval")
+    if args.queue_capacity is not None and args.queue_capacity < 1: parser.error("Queue capacity must be positive")
     return args
 
 

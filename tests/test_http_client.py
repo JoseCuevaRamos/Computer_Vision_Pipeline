@@ -5,6 +5,7 @@ import pytest
 httpx = pytest.importorskip("httpx")
 
 from src.client.http_client import InferenceHTTPClient, RemoteRequestError
+from src.image_geometry import PREPROCESSING_ID
 
 
 def _payload(image_id: str) -> dict:
@@ -64,4 +65,34 @@ def test_client_rejects_mismatched_image_id() -> None:
 def test_client_requires_https_by_default() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
         InferenceHTTPClient("http://localhost:8000", "secret-value-123")
+
+
+def test_experiment3_health_and_prediction_route() -> None:
+    paths = []
+
+    def handler(request):
+        paths.append(request.url.path)
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok", "model_loaded": True, "preprocessing_id": PREPROCESSING_ID})
+        payload = {**_payload("img-1"), "preprocessing_id": PREPROCESSING_ID}
+        assert b"image/png" in request.content
+        return httpx.Response(200, json=payload)
+
+    async def scenario():
+        async with InferenceHTTPClient("https://example.test", "secret-value-123",
+                                       preprocess_on_client=True, transport=httpx.MockTransport(handler)) as client:
+            await client.health()
+            await client.predict("img-1", b"png")
+    asyncio.run(scenario())
+    assert paths == ["/health", "/predict/preprocessed"]
+
+
+def test_experiment3_rejects_an_old_server_before_processing_images() -> None:
+    async def scenario():
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={"status": "ok", "model_loaded": True}))
+        async with InferenceHTTPClient("https://example.test", "secret-value-123",
+                                       preprocess_on_client=True, transport=transport) as client:
+            with pytest.raises(RemoteRequestError, match="rebuild"):
+                await client.health()
+    asyncio.run(scenario())
 
