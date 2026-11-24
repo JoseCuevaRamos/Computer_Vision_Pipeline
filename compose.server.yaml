@@ -1,0 +1,59 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    env_file:
+      - path: .env.server
+        required: false
+    environment:
+      TORCH_HOME: /app/model_cache
+      PYTHONPATH: /app
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+        read_only: true
+      - type: bind
+        source: ./results/experiment2/server
+        target: /app/results/server
+    command:
+      - uvicorn
+      - src.server.api:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "1"
+
+  prepare_model:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    environment:
+      TORCH_HOME: /app/model_cache
+      PYTHONPATH: /app
+    volumes:
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+    command: python -m src.server.prepare_model
+
+  test-server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    environment:
+      API_KEY: test-api-key-123456
+      TORCH_HOME: /app/model_cache
+      PYTHONPATH: /app
+    volumes:
+      - type: bind
+        source: ./model_cache
+        target: /app/model_cache
+        read_only: true
+    command: pytest -q tests/test_server_api.py tests/test_remote_predictions.py
+

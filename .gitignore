@@ -2,10 +2,20 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+.env.client
+.env.server
 data/imagenette/*
 model_cache/*
 results/*
 !data/imagenette/.gitkeep
 !model_cache/.gitkeep
 !results/.gitkeep
+!results/experiment2/
+results/experiment2/*
+!results/experiment2/client/
+!results/experiment2/server/
+results/experiment2/client/*
+results/experiment2/server/*
+!results/experiment2/client/.gitkeep
+!results/experiment2/server/.gitkeep
 

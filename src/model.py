@@ -23,7 +23,7 @@ def load_model(
     require_cached: bool = True,
 ) -> tuple[torch.nn.Module, float]:
     if device != "cpu":
-        raise ValueError("Experiment 1 is CPU-only")
+        raise ValueError("This project configuration is CPU-only")
     if torch_threads is not None:
         torch.set_num_threads(torch_threads)
     if require_cached:

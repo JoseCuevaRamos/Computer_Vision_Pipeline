@@ -1,0 +1,77 @@
+services:
+  client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    env_file:
+      - path: .env.client
+        required: false
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+        read_only: true
+      - type: bind
+        source: ./results/experiment1/dataset_manifest.csv
+        target: /app/config/dataset_manifest.csv
+        read_only: true
+      - type: bind
+        source: ./results/experiment2/client
+        target: /app/results/client
+      - type: bind
+        source: ./results/experiment1_single_corrected
+        target: /app/baseline
+        read_only: true
+    command: python -m experiments.experiment2_remote_png
+
+  client-quick:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    env_file:
+      - path: .env.client
+        required: false
+    environment:
+      PYTHONPATH: /app
+    volumes:
+      - type: bind
+        source: ./data/imagenette
+        target: /app/data/imagenette
+        read_only: true
+      - type: bind
+        source: ./results/experiment1/dataset_manifest.csv
+        target: /app/config/dataset_manifest.csv
+        read_only: true
+      - type: bind
+        source: ./results/experiment2/client
+        target: /app/results/client
+      - type: bind
+        source: ./results/experiment1_single_corrected
+        target: /app/baseline
+        read_only: true
+    command:
+      - python
+      - -m
+      - experiments.experiment2_remote_png
+      - --num-images
+      - "10"
+      - --runs
+      - "1"
+      - --warmup
+      - "2"
+      - --concurrencies
+      - "1"
+      - --results-root
+      - /app/results/client/quick_test
+      - --skip-hash-verification
+
+  test-client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    environment:
+      PYTHONPATH: /app
+    command: pytest -q tests/test_http_client.py tests/test_pipeline.py
+

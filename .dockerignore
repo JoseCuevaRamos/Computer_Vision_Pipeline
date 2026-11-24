@@ -11,4 +11,8 @@ __pycache__
 .venv
 venv
 *.log
+.env
+.env.*
+!.env.client.example
+!.env.server.example
 
